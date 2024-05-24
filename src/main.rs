@@ -6,7 +6,7 @@ use tokio_util::compat::TokioAsyncWriteCompatExt;
 
 static CONFIG: &str = "config.ini";
 static GOLDEN: &str = "golden_samples";
-static LIMIT: i32 = 6;
+static LIMIT: i32 = 3;
 
 #[derive(Default)]
 struct Config {
@@ -19,7 +19,7 @@ struct Config {
 }
 
 impl Config {
-    fn read_config(&mut self, path: PathBuf) {
+    fn read_config(&mut self, path: PathBuf, verbose: bool) {
         if let Ok(config) = Ini::load_from_file(path.clone()) {
             if let Some(jvserver) = config.section(Some("JVSERVER")) {
                 // mandatory fields:
@@ -45,7 +45,7 @@ impl Config {
                     if !port.is_empty() {
                         if let Ok(x) = port.parse::<u16>() {
                             self.port = x;
-                        } else {
+                        } else if verbose {
                             eprintln!("W: Could not parse port number: {port}");
                         }
                     }
@@ -79,17 +79,24 @@ async fn get_count(
     config_db: &String,
     tib_config: tiberius::Config,
     target: &String,
+    verbose: bool,
 ) -> anyhow::Result<i32> {
-    println!("I: Trying to establish TCP connection");
+    if verbose {
+        println!("I: Trying to establish TCP connection");
+    }
     let tcp = TcpStream::connect(tib_config.get_addr()).await?;
     tcp.set_nodelay(true)?;
 
-    println!("I: Trying to establish client connection");
+    if verbose {
+        println!("I: Trying to establish client connection");
+    }
     let mut client = Client::connect(tib_config, tcp.compat_write()).await?;
 
     if !config_db.is_empty() {
         let qtext = format!("USE [{}]", config_db);
-        println!("> {}", qtext);
+        if verbose {
+            println!("> {}", qtext);
+        }
         let query = Query::new(qtext);
         query.execute(&mut client).await?;
     }
@@ -98,7 +105,9 @@ async fn get_count(
         "SELECT COUNT(*) FROM [dbo].[SMT_Test] WHERE [Serial_NMBR] = '{}'",
         target
     );
-    println!("> {}", qtext);
+    if verbose {
+        println!("> {}", qtext);
+    }
     let query = Query::new(qtext);
     let result = query.query(&mut client).await?;
 
@@ -121,16 +130,29 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     let target = args.get(1).expect("ERR: No argument found!").clone();
 
-    // Check if it is a golden sample, if it is then rturn OK.
+    // Additional command line options:
+    // -v -> verbose | For debugging purposes only
+    let mut verbose = false;
+    if let Some(x) = args.get(2) {
+        if x == "-v" {
+            verbose = true;
+        }
+    }
+
+    // Check if it is a golden sample, if it is then return OK.
     let golden_samples: Vec<String> = load_gs_list(exe_path.with_file_name(GOLDEN));
     if golden_samples.contains(&target) {
-        println!("I: Target DMC is a golden sample.");
+        if verbose {
+            println!("I: Target DMC is a golden sample.");
+        }
+        println!("GS"); // BT-BASIC can read the stdout, tell it that the board is a Golden sample
+
         return Ok(());
     }
 
     // Read configuration
     let mut config = Config::default();
-    config.read_config(exe_path.with_file_name(CONFIG));
+    config.read_config(exe_path.with_file_name(CONFIG), verbose);
 
     // Tiberius configuartion:
     let mut tib_config = tiberius::Config::new();
@@ -159,17 +181,22 @@ async fn main() -> anyhow::Result<()> {
 
     // The connection might fail sometimes, so we will try 3 times:
     let mut tries = 0;
-    let mut result = get_count(&config.database, tib_config.clone(), &target).await;
+    let mut result = get_count(&config.database, tib_config.clone(), &target, verbose).await;
     while tries < 2 && result.is_err() {
-        println!("ERR: Failed to connect, retrying! {}/2", tries + 1);
-        result = get_count(&config.database, tib_config.clone(), &target).await;
+        if verbose {
+            println!("ERR: Failed to connect, retrying! {}/2", tries + 1);
+        }
+        result = get_count(&config.database, tib_config.clone(), &target, verbose).await;
         tries += 1;
     }
 
     let x = result?;
-    println!("Result received: {x}");
+    if verbose {
+        println!("Result received: {x}");
+    }
 
     if x < LIMIT {
+        println!("OK"); // Write to stdout so BT-BASIC can read it
         Ok(())
     } else {
         panic!("Target limit reached!")
