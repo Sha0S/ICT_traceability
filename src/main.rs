@@ -128,7 +128,7 @@ async fn get_count(
         }
     }
 
-    Err(anyhow::Error::msg("ER: Failed conversion!"))
+    Err(anyhow::Error::msg("Failed conversion!"))
 }
 
 async fn get_count_for_mb(
@@ -156,7 +156,7 @@ async fn get_count_for_mb(
         "SELECT COUNT(*) AS Fails
         FROM [dbo].[SMT_Test]
         WHERE [Serial_NMBR] IN ({})
-        AND [Result] = 'Fail'
+        AND [Result] = 'Failed'
         GROUP BY [Serial_NMBR]
 		ORDER BY Fails DESC;",
         targets_string
@@ -171,7 +171,7 @@ async fn get_count_for_mb(
         }
     }
 
-    Err(anyhow::Error::msg("ER: Failed conversion!"))
+    Err(anyhow::Error::msg("Failed conversion!"))
 }
 
 #[tokio::main]
