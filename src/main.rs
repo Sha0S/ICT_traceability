@@ -100,19 +100,61 @@ fn increment_sn(start: &str, boards: u8) -> Vec<String> {
     ret
 }
 
-async fn get_count(
-    config_db: &String,
-    tib_config: tiberius::Config,
-    target: &String,
-) -> anyhow::Result<i32> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // The current working directory will be not the directory of the executable,
+    // So we will need to make absolut paths for .\config and .\golden_samples
+    let exe_path = env::current_exe().expect("ER: Can't read the directory of the executable!"); // Shouldn't fail.
+
+    // Read configuration
+    let config = match Config::read(exe_path.with_file_name(CONFIG)) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("{e}");
+            std::process::exit(0)
+        }
+    };
+
+    // First argument should be the DMC we want to check
+    let args: Vec<String> = env::args().collect();
+    let target = args.get(1).expect("ER: No argument found!").clone(); // Shouldn't happen
+
+    let boards: u8;
+    if let Some(x) = args.get(2) {
+        boards = x.parse().unwrap_or(1);
+    } else {
+        boards = 1;
+    }
+
+    // Check if it is a golden sample, if it is then return 'GS'.
+    let golden_samples: Vec<String> = load_gs_list(exe_path.with_file_name(GOLDEN));
+    if golden_samples.contains(&target) {
+        println!("GS: Panel is a golden sample");
+        return Ok(());
+    }
+
+    // Tiberius configuartion:
+    let mut tib_config = tiberius::Config::new();
+    tib_config.host(config.server);
+    tib_config.authentication(tiberius::AuthMethod::sql_server(
+        config.username,
+        config.password,
+    ));
+    tib_config.trust_cert(); // Most likely not needed.
+    // Configuration done.
+
+
+    // Connect to the DB:
     let tcp = TcpStream::connect(tib_config.get_addr()).await?;
     tcp.set_nodelay(true)?;
-
     let mut client = Client::connect(tib_config, tcp.compat_write()).await?;
 
-    let qtext = format!("USE [{}]", config_db);
+    // USE [DB]
+    let qtext = format!("USE [{}]", config.database);
     let query = Query::new(qtext);
     query.execute(&mut client).await?;
+
+    // QUERY #1:
 
     let qtext = format!(
         "SELECT COUNT(*) FROM [dbo].[SMT_Test] WHERE [Serial_NMBR] = '{}'",
@@ -122,31 +164,29 @@ async fn get_count(
     let query = Query::new(qtext);
     let result = query.query(&mut client).await?;
 
+    let tested_total;
     if let Some(row) = result.into_row().await? {
         if let Some(x) = row.get::<i32, usize>(0) {
-            return Ok(x);
+            tested_total = x;
+            if tested_total < LIMIT {
+                println!("OK: {tested_total}");
+                return Ok(());
+            } else if tested_total >= LIMIT_2 {
+                println!("NK: {tested_total}");
+                return Ok(());
+            }
+        } else {
+            println!("ER: Q#1 Parsing error.");
+            return Ok(());
         }
+    } else {
+        println!("ER: Q#1 result is none.");
+        return Ok(());
     }
 
-    Err(anyhow::Error::msg("Failed conversion!"))
-}
+    // QUERY #2:
 
-async fn get_count_for_mb(
-    config_db: &String,
-    tib_config: tiberius::Config,
-    target: &str,
-    boards: u8,
-) -> anyhow::Result<i32> {
-    let tcp = TcpStream::connect(tib_config.get_addr()).await?;
-    tcp.set_nodelay(true)?;
-
-    let mut client = Client::connect(tib_config, tcp.compat_write()).await?;
-
-    let qtext = format!("USE [{}]", config_db);
-    let query = Query::new(qtext);
-    query.execute(&mut client).await?;
-
-    let targets: Vec<String> = increment_sn(target, boards)
+    let targets: Vec<String> = increment_sn(&target, boards)
         .iter()
         .map(|f| format!("'{f}'"))
         .collect();
@@ -167,102 +207,19 @@ async fn get_count_for_mb(
 
     if let Some(row) = result.into_row().await? {
         if let Some(x) = row.get::<i32, usize>(0) {
-            return Ok(x);
+            if x >= LIMIT {
+                println!("NK: {x} ({tested_total})");
+                return Ok(());
+            } else {
+                println!("OK: {x} ({tested_total})");
+                return Ok(());
+            }
+        } else {
+            println!("ER: Q#2 Parsing error.");
+            return Ok(());
         }
-    }
-
-    Err(anyhow::Error::msg("Failed conversion!"))
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // The current working directory will be not the directory of the executable,
-    // So we will need to make absolut paths for .\config and .\golden_samples
-    let exe_path = env::current_exe().expect("ER: Can't read the directory of the executable!"); // Shouldn't fail.
-
-    // First argument should be the DMC we want to check
-    let args: Vec<String> = env::args().collect();
-    let target = args.get(1).expect("ER: No argument found!").clone(); // Shouldn't happen
-
-    let boards: u8;
-    if let Some(x) = args.get(2) {
-        boards = x.parse().unwrap_or(1);
     } else {
-        boards = 1;
-    }
-
-    // Check if it is a golden sample, if it is then return 'GS'.
-    let golden_samples: Vec<String> = load_gs_list(exe_path.with_file_name(GOLDEN));
-    if golden_samples.contains(&target) {
-        println!("GS: Panel is golden sample");
-
+        println!("OK: 0 ({tested_total})"); // Q#2 will return NONE, if the MB has no 'failed' results at all.
         return Ok(());
     }
-
-    // Read configuration
-    let config = match Config::read(exe_path.with_file_name(CONFIG)) {
-        Ok(c) => c,
-        Err(e) => {
-            println!("{e}");
-            std::process::exit(0)
-        }
-    };
-
-    // Tiberius configuartion:
-    let mut tib_config = tiberius::Config::new();
-
-    tib_config.host(config.server);
-
-    tib_config.authentication(tiberius::AuthMethod::sql_server(
-        config.username,
-        config.password,
-    ));
-
-    // Most likely not needed.
-    tib_config.trust_cert();
-    // Configuration done.
-
-    // The connection might fail sometimes, so we will try 3 times:
-    let mut tries = 0;
-    let mut result = get_count(&config.database, tib_config.clone(), &target).await;
-    while tries < 2 && result.is_err() {
-        result = get_count(&config.database, tib_config.clone(), &target).await;
-        tries += 1;
-    }
-
-    if result.is_err() {
-        println!("ER: {}", result.err().unwrap());
-        std::process::exit(0)
-    }
-
-    let x = result?;
-
-    if x < LIMIT {
-        println!("OK: {x}");
-    } else if x >= LIMIT_2 || boards < 2 {
-        println!("NK: {x}");
-    } else {
-        // Get the maximum number of failures on the MB
-        let mut tries = 0;
-        let mut result =
-            get_count_for_mb(&config.database, tib_config.clone(), &target, boards).await;
-        while tries < 2 && result.is_err() {
-            result = get_count_for_mb(&config.database, tib_config.clone(), &target, boards).await;
-            tries += 1;
-        }
-
-        if result.is_err() {
-            println!("ER: {}", result.err().unwrap());
-            std::process::exit(0)
-        }
-
-        let y = result?;
-        if y < LIMIT {
-            println!("OK: {y} ({x})");
-        } else {
-            println!("NK: {y} ({x})");
-        }
-    }
-
-    Ok(())
 }
