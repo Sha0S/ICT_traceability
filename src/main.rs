@@ -127,7 +127,14 @@ async fn main() -> anyhow::Result<()> {
 
     // First argument should be the DMC we want to check
     let args: Vec<String> = env::args().collect();
-    let target = args.get(1).expect("ER: No argument found!").clone(); // Shouldn't happen
+
+    let target;
+    if let Some(x) = args.get(1) {
+        target = x.to_owned();
+    } else {
+        println!("ER: No argument found!");
+        return Ok(());
+    }
 
     let boards: u8;
     if let Some(x) = args.get(2) {
