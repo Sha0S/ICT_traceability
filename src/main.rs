@@ -100,6 +100,16 @@ fn increment_sn(start: &str, boards: u8) -> Vec<String> {
     ret
 }
 
+async fn connect(
+    tib_config: tiberius::Config,
+) -> anyhow::Result<tiberius::Client<tokio_util::compat::Compat<TcpStream>>> {
+    let tcp = TcpStream::connect(tib_config.get_addr()).await?;
+    tcp.set_nodelay(true)?;
+    let client = Client::connect(tib_config, tcp.compat_write()).await?;
+
+    Ok(client)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // The current working directory will be not the directory of the executable,
@@ -143,11 +153,19 @@ async fn main() -> anyhow::Result<()> {
     tib_config.trust_cert(); // Most likely not needed.
     // Configuration done.
 
-
     // Connect to the DB:
-    let tcp = TcpStream::connect(tib_config.get_addr()).await?;
-    tcp.set_nodelay(true)?;
-    let mut client = Client::connect(tib_config, tcp.compat_write()).await?;
+    let mut client_tmp = connect(tib_config.clone()).await;
+    let mut tries = 0;
+    while client_tmp.is_err() && tries < 3 {
+        client_tmp = connect(tib_config.clone()).await;
+        tries += 1;
+    }
+
+    if client_tmp.is_err() {
+        println!("ER: Connection to DB failed!");
+        return Ok(());
+    }
+    let mut client = client_tmp?;
 
     // USE [DB]
     let qtext = format!("USE [{}]", config.database);
@@ -184,6 +202,8 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Check each panel if LIMIT <= tested_total < LIMIT_2
+    // No single board should have 'failed' LIMIT times
     // QUERY #2:
 
     let targets: Vec<String> = increment_sn(&target, boards)
