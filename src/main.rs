@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use ini::Ini;
 use std::{env, fs, path::PathBuf};
 use tiberius::{Client, Query};
